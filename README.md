@@ -2,4 +2,4 @@
 AWS serverless system to analyze and response to threat logs  Palo Alto Networks
 
 
-![Test Image 4](Screenshot 2020-06-12 at 12.02.48 PM.png)
+<img src="https://github.com/hiep4hiep/AWS-threat-log-processing/blob/master/Screenshot%202020-06-12%20at%2012.02.48%20PM.png?raw=true">
