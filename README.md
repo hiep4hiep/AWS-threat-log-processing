@@ -22,3 +22,8 @@ The purpose of this project is to add capability of holding file and wait for ve
 - If verdict is clean/benign, Lambda will send an email to notify user that the file is ready to download and Lambda also updates EDL (that is hosted on S3 😄)
 - If verdict is malicious, Lambda will send an email to inform user that the file is malicious
 
+
+In this github repo, I put all the configuration file and sample code to make it works, including:
+- Logstash configuration
+- SQS standard queue name, batch size is 1: "prisma"
+- Lambda function: "wildfire-check"
