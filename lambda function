@@ -1,0 +1,206 @@
+from botocore.vendored import requests
+import boto3
+import json
+import time
+import smtplib
+import time
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+
+def submit_remote_file(url):
+    session = requests.Session()
+    request_url = "https://wildfire.paloaltonetworks.com/publicapi/submit/url"
+
+    api_key = "yourwildfirekey"
+    files = {'apikey': (None, api_key),
+             'url': (None, str(url))}
+
+    response = session.post(request_url, files=files)
+    r = response.text
+    start = r.find('<sha256>')
+    end = r.find('</sha256>')
+    return(r[start+8:end])
+
+def get_verdict(sha):
+    session = requests.Session()
+    request_url = "https://wildfire.paloaltonetworks.com/publicapi/get/verdict"
+
+    api_key = "yourwildfirekey"
+    files = {'apikey': (None, api_key),
+             'hash': (None, str(sha))}
+
+    response = session.post(request_url, files=files)
+    r = response.text
+    if "Unsupport" in r:
+        return(6)
+    else:
+        start = r.find('<verdict>')
+        end = r.find('</verdict>')
+        return (r[start + 9:end])
+
+
+def create_body_xml(ip):
+    xml_body_full = ""
+    xml_body = '''\
+                <entry ip="{}">
+                <tag>
+                <member>blockurl</member>
+                </tag>
+                </entry>'''
+    xml_body_full = xml_body_full + xml_body.format(ip)
+    return(xml_body_full)
+
+
+def register_dag_xml(ip):
+    xml_head = '''\
+    <uid-message>
+    <version>1.0</version>
+    <type>update</type>
+    <payload>
+    <register>'''
+    xml_tail = '''\
+    </register> 
+    </payload>
+    </uid-message>'''
+    xml = xml_head + create_body_xml(ip) + xml_tail
+    newxml = xml.replace('>    <', '><').replace('>                    <','><').replace('>     <','><').replace('    ','').replace('\n','').replace('> <','><')
+    return(newxml)
+
+
+def dynamic_group(ip,key,xml):
+    url = "https://"+ip+"/api/?type=user-id&key="+key+'&cmd='+xml
+    response = requests.post(url, verify=False)
+    return(response.text)
+
+
+def register_tag(badip, ip):
+    key = 'yourprismaaccessapikey'
+    registerxml = register_dag_xml(badip)
+    dynamic_group(ip, key,registerxml)
+
+
+def send_email_clean(jsonlog):
+    fromaddr = "youremail@gmail.com"
+    toaddr = "destemail@gmail.com"
+    msg = MIMEMultipart()
+    msg['From'] = fromaddr
+    msg['To'] = toaddr
+    msg['Subject'] = "Your download link is ready to proceed"
+
+    html_head = """\
+            <html>
+              <head></head>
+              <body>
+                <p><span style="color: #000729;"><strong>Hi {}, Your requested file is clean and safe to download. This is your link {}</strong></span></p>"""
+    html_tail = """\
+              </body>
+            </html>
+        """
+
+    body = html_head.format(str(jsonlog["Source User"]), str(jsonlog["URL/Filename"])) + html_tail
+    print('Sending notification email to ', toaddr)
+    msg.attach(MIMEText(body, 'html'))
+
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(fromaddr, "yourpasswordhere")
+    text = msg.as_string()
+    server.sendmail(fromaddr, toaddr, text)
+    server.quit()
+
+
+def send_email_malware(jsonlog):
+    fromaddr = "youremail@gmail.com"
+    toaddr = "destemail@gmail.com"
+    msg = MIMEMultipart()
+    msg['From'] = fromaddr
+    msg['To'] = toaddr
+    msg['Subject'] = "Your download link is malicious"
+
+    html_head = """\
+            <html>
+              <head></head>
+              <body>
+                <p><span style="color: #000729;"><strong>Hi {}, Your requested file is malicious and not safe to download.</strong></span></p>"""
+    html_tail = """\
+              </body>
+            </html>
+        """
+
+    body = html_head.format(str(jsonlog["Source User"])) + html_tail
+    print('Sending notification email to ', toaddr)
+    msg.attach(MIMEText(body, 'html'))
+
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(fromaddr, "yourpasswordhere")
+    text = msg.as_string()
+    server.sendmail(fromaddr, toaddr, text)
+    server.quit()
+
+
+def update_edl(url):
+    bucketname = 'prisma-access' # replace with your bucket name
+    filename = 'urllist.txt' # replace with your object key
+    s3 = boto3.resource('s3')
+    s3.Bucket(bucketname).download_file(filename, '/tmp/urllist.txt')
+    with open("/tmp/urllist.txt","a") as f:
+        f.writelines("\n"+url)
+    s3.Bucket(bucketname).upload_file('/tmp/urllist.txt','urllist.txt')
+
+def lambda_handler(event, context):
+    #Main task
+    try:
+        for record in event['Records']:
+            body = json.loads(record["body"])
+            url = 'http://' + str(body["URL/Filename"])
+            user = body["Source User"]
+    except Exception as e:
+        print(e)
+        raise e
+
+    #### Submit sample and get result ###
+    hash = str(submit_remote_file(url))
+    result = 100
+    i = 1
+    
+    if "encoding" not in hash:
+        while result not in range(0,4):
+            result = int(get_verdict(hash))
+            print('Checking '+str(i)+ ' attempt')
+            print(result)
+            time.sleep(60.0 - (time.time() % 60.0))
+            i+=1
+    
+        if result == 0:
+            verdict = 'benign'
+            #send_email_clean(event)
+            update_edl(str(body["URL/Filename"]))
+        elif result == 1:
+            verdict = 'malware'
+            #send_email_malware(event)
+        elif result == 3:
+            verdict = 'grayware'
+            #send_email_malware(event)
+        elif result == 4:
+            verdict = 'phishing'
+            #send_email_malware(event)
+        elif result == 6:
+            verdict = 'not support'
+        else:
+            verdict = 'null'
+        print(verdict)
+        
+        return {
+            'statusCode': 200,
+            'verdict': verdict,
+            'user': user
+        }
+        
+    else:
+        return {
+            'statusCode': 400,
+            'verdict': 'cannot detect file',
+            'user': user
+        }
